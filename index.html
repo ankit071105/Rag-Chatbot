@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DocRAG — Document Q&A System</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<style>
+  * { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; }
+  .chat-scroll { overflow-y: auto; max-height: calc(100vh - 360px); min-height: 200px; }
+  .src-scroll  { overflow-y: auto; max-height: calc(100vh - 300px); }
+  .drop-active { border-color: #111827 !important; background: #f9fafb; }
+  .spin { animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .fade-in { animation: fadeIn 0.3s ease; }
+  @keyframes fadeIn { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
+  input[type="file"] { display: none; }
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: #f1f1f1; }
+  ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 2px; }
+.prose-chat p { margin-bottom: 0.5rem; }
+.prose-chat p:last-child { margin-bottom: 0; }
+.prose-chat ol { list-style: decimal; padding-left: 1.25rem; margin: 0.5rem 0; }
+.prose-chat ul { list-style: disc; padding-left: 1.25rem; margin: 0.5rem 0; }
+.prose-chat li { margin-bottom: 0.25rem; line-height: 1.6; }
+.prose-chat strong { font-weight: 600; color: #111827; }
+.prose-chat code { background: #f3f4f6; padding: 1px 5px; border-radius: 4px; font-size: 0.8em; }
+.prose-chat h1,.prose-chat h2,.prose-chat h3 { font-weight: 600; margin: 0.75rem 0 0.25rem; }
+</style>
+</head>
+<body class="bg-white text-gray-900 h-screen flex flex-col overflow-hidden">
+
+<!-- ── Top bar ─────────────────────────────────────────────────────────── -->
+<header class="border-b border-gray-100 px-6 py-3 flex items-center justify-between flex-shrink-0">
+  <div class="flex items-center gap-3">
+    <span class="font-semibold text-lg tracking-tight">DocRAG</span>
+    <span class="text-gray-400 text-sm">Document Question Answering · RAG System</span>
+  </div>
+  <div class="flex items-center gap-3">
+    <span id="status-pill" class="text-xs font-medium px-3 py-1 rounded-full bg-gray-100 text-gray-500">Idle</span>
+    <div class="flex gap-2 text-xs text-gray-500">
+      <span id="stat-docs" class="bg-gray-50 border border-gray-200 px-2 py-1 rounded">0 docs</span>
+      <span id="stat-chunks" class="bg-gray-50 border border-gray-200 px-2 py-1 rounded">0 chunks</span>
+      <span id="stat-q" class="bg-gray-50 border border-gray-200 px-2 py-1 rounded">0 questions</span>
+    </div>
+    <button onclick="clearHistory()" class="text-xs text-gray-400 hover:text-gray-700 border border-gray-200 px-3 py-1 rounded hover:bg-gray-50 transition">Clear chat</button>
+    <button onclick="exportChat()" class="text-xs text-gray-700 border border-gray-300 px-3 py-1 rounded hover:bg-gray-50 transition">Export</button>
+  </div>
+</header>
+
+<!-- ── Main layout ──────────────────────────────────────────────────────── -->
+<div class="flex flex-1 overflow-hidden">
+
+  <!-- Sidebar -->
+  <aside class="w-72 border-r border-gray-100 bg-gray-50 flex flex-col flex-shrink-0 overflow-y-auto">
+    <div class="p-4 space-y-5">
+
+      <!-- API Key -->
+      <div>
+        <div class="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-2">Groq API Key</div>
+        <input id="api-key" type="password" placeholder="gsk_..."
+          class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-1 focus:ring-gray-400"/>
+        <details class="mt-2">
+          <summary class="text-xs text-gray-400 cursor-pointer hover:text-gray-600 select-none">How to get a free key</summary>
+          <div class="text-xs text-gray-500 mt-2 space-y-1 pl-2 border-l-2 border-gray-200">
+            <p>1. Go to <a href="https://console.groq.com" target="_blank" class="text-blue-600 underline">console.groq.com</a></p>
+            <p>2. Sign up free (Google or email)</p>
+            <p>3. Click <strong>API Keys</strong> → <strong>Create API Key</strong></p>
+            <p>4. Copy the <code class="bg-gray-100 px-1 rounded">gsk_...</code> key</p>
+            <p>5. Paste it above</p>
+          </div>
+        </details>
+      </div>
+
+      <!-- Model -->
+      <div>
+        <div class="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-2">Model</div>
+        <select id="model-sel" class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-1 focus:ring-gray-400">
+          <option value="llama-3.1-8b-instant">llama-3.1-8b-instant (fastest)</option>
+          <option value="llama-3.3-70b-versatile">llama-3.3-70b-versatile (best)</option>
+          <option value="meta-llama/llama-4-scout-17b-16e-instruct">llama-4-scout-17b</option>
+          <option value="moonshotai/kimi-k2-instruct">kimi-k2-instruct</option>
+        </select>
+      </div>
+
+      <!-- Upload -->
+      <div>
+        <div class="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-2">Documents</div>
+        <div id="drop-zone"
+          class="border-2 border-dashed border-gray-200 rounded-lg p-4 text-center cursor-pointer hover:border-gray-400 transition"
+          onclick="document.getElementById('file-input').click()"
+          ondragover="event.preventDefault();this.classList.add('drop-active')"
+          ondragleave="this.classList.remove('drop-active')"
+          ondrop="handleDrop(event)">
+          <div class="text-2xl mb-1">📄</div>
+          <div class="text-sm text-gray-500">Drop PDF or TXT files here</div>
+          <div class="text-xs text-gray-400 mt-1">or click to browse</div>
+          <input id="file-input" type="file" multiple accept=".pdf,.txt" onchange="handleFiles(this.files)">
+        </div>
+        <div id="file-list" class="mt-2 space-y-1"></div>
+      </div>
+
+      <!-- Settings -->
+      <div>
+        <div class="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-3">Settings</div>
+        <div class="space-y-3">
+          <div>
+            <div class="flex justify-between text-xs text-gray-500 mb-1">
+              <span>Chunk size</span><span id="csz-val">500</span>
+            </div>
+            <input id="csz" type="range" min="200" max="2000" value="500" step="100"
+              class="w-full accent-gray-900" oninput="document.getElementById('csz-val').textContent=this.value">
+          </div>
+          <div>
+            <div class="flex justify-between text-xs text-gray-500 mb-1">
+              <span>Chunk overlap</span><span id="cov-val">50</span>
+            </div>
+            <input id="cov" type="range" min="0" max="400" value="50" step="50"
+              class="w-full accent-gray-900" oninput="document.getElementById('cov-val').textContent=this.value">
+          </div>
+          <div>
+            <div class="flex justify-between text-xs text-gray-500 mb-1">
+              <span>Top-K chunks</span><span id="topk-val">3</span>
+            </div>
+            <input id="topk" type="range" min="1" max="10" value="3"
+              class="w-full accent-gray-900" oninput="document.getElementById('topk-val').textContent=this.value">
+          </div>
+          <div>
+            <div class="text-xs text-gray-500 mb-2">Answer mode</div>
+            <div class="flex gap-2">
+              <label class="flex items-center gap-1 text-xs cursor-pointer">
+                <input type="radio" name="mode" value="precise" checked class="accent-gray-900"> Precise
+              </label>
+              <label class="flex items-center gap-1 text-xs cursor-pointer">
+                <input type="radio" name="mode" value="detailed" class="accent-gray-900"> Detailed
+              </label>
+              <label class="flex items-center gap-1 text-xs cursor-pointer">
+                <input type="radio" name="mode" value="summary" class="accent-gray-900"> Summary
+              </label>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Process button -->
+      <button id="process-btn" onclick="processDocuments()"
+        class="w-full bg-gray-900 text-white text-sm font-medium py-2.5 rounded-lg hover:bg-gray-700 active:scale-95 transition flex items-center justify-center gap-2">
+        <span id="process-label">Process Documents</span>
+      </button>
+
+      <!-- Indexed docs -->
+      <div id="indexed-docs" class="hidden">
+        <div class="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-2">Indexed</div>
+        <div id="doc-chips" class="space-y-1"></div>
+      </div>
+
+    </div>
+  </aside>
+
+  <!-- Chat area -->
+  <main class="flex-1 flex flex-col overflow-hidden">
+
+    <!-- Messages -->
+    <div class="flex-1 overflow-hidden flex gap-0">
+
+      <!-- Conversation -->
+      <div class="flex-1 flex flex-col p-5 border-r border-gray-100">
+        <div class="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-3">Conversation</div>
+        <div id="chat" class="chat-scroll flex flex-col gap-4 pr-1">
+          <div id="empty-state" class="flex flex-col items-center justify-center h-40 text-gray-300">
+            <div class="text-4xl mb-3">💬</div>
+            <div class="text-sm">Upload documents and ask a question</div>
+          </div>
+        </div>
+
+        <!-- Error banner -->
+        <div id="error-banner" class="hidden mt-3 bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-2.5 rounded-lg"></div>
+
+        <!-- Ask form -->
+        <div class="mt-4 flex gap-2">
+          <input id="q-input" type="text"
+            placeholder="Ask anything about your documents..."
+            class="flex-1 border border-gray-200 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-gray-400"
+            onkeydown="if(event.key==='Enter')askQuestion()"/>
+          <button onclick="askQuestion()" id="ask-btn"
+            class="bg-gray-900 text-white px-5 py-2.5 rounded-lg text-sm font-medium hover:bg-gray-700 active:scale-95 transition flex items-center gap-2 flex-shrink-0">
+            <span id="ask-label">Ask</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Sources panel -->
+      <div class="w-72 flex-shrink-0 p-4 bg-gray-50 flex flex-col">
+        <div class="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-3">Retrieved Chunks</div>
+        <div id="sources" class="src-scroll space-y-2">
+          <div class="text-xs text-gray-300">Source chunks appear here after your first question.</div>
+        </div>
+
+        <!-- Pipeline info -->
+        <div class="mt-auto pt-4 border-t border-gray-100">
+          <div class="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-2">RAG Pipeline</div>
+          <div class="space-y-1.5 text-xs text-gray-400">
+            <div class="flex items-center gap-2"><span class="w-4 h-4 rounded-full bg-gray-200 flex items-center justify-center text-gray-500 font-bold text-xs flex-shrink-0">1</span>Document ingestion</div>
+            <div class="flex items-center gap-2"><span class="w-4 h-4 rounded-full bg-gray-200 flex items-center justify-center text-gray-500 font-bold text-xs flex-shrink-0">2</span>Text chunking</div>
+            <div class="flex items-center gap-2"><span class="w-4 h-4 rounded-full bg-gray-200 flex items-center justify-center text-gray-500 font-bold text-xs flex-shrink-0">3</span>Embedding creation</div>
+            <div class="flex items-center gap-2"><span class="w-4 h-4 rounded-full bg-gray-200 flex items-center justify-center text-gray-500 font-bold text-xs flex-shrink-0">4</span>Vector database (FAISS)</div>
+            <div class="flex items-center gap-2"><span class="w-4 h-4 rounded-full bg-gray-200 flex items-center justify-center text-gray-500 font-bold text-xs flex-shrink-0">5</span>Query embedding</div>
+            <div class="flex items-center gap-2"><span class="w-4 h-4 rounded-full bg-gray-200 flex items-center justify-center text-gray-500 font-bold text-xs flex-shrink-0">6</span>Context retrieval</div>
+            <div class="flex items-center gap-2"><span class="w-4 h-4 rounded-full bg-gray-200 flex items-center justify-center text-gray-500 font-bold text-xs flex-shrink-0">7</span>Answer generation (Groq)</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </main>
+</div>
+
+<script>
+const API = "http://localhost:8000";
+let pendingFiles = [];
+
+// ── File handling ────────────────────────────────────────────────────────
+function handleFiles(files) {
+  pendingFiles = [...files];
+  renderFileList();
+}
+function handleDrop(e) {
+  e.preventDefault();
+  document.getElementById("drop-zone").classList.remove("drop-active");
+  handleFiles(e.dataTransfer.files);
+}
+function renderFileList() {
+  const el = document.getElementById("file-list");
+  el.innerHTML = pendingFiles.map(f => `
+    <div class="flex items-center justify-between bg-white border border-gray-200 rounded-lg px-3 py-2">
+      <span class="text-xs font-medium text-gray-700 truncate max-w-[160px]">${f.name}</span>
+      <span class="text-xs text-gray-400 ml-2 flex-shrink-0">${(f.size/1024).toFixed(1)}KB</span>
+    </div>`).join("");
+}
+
+// ── Process ──────────────────────────────────────────────────────────────
+async function processDocuments() {
+  const key   = document.getElementById("api-key").value.trim();
+  const model = document.getElementById("model-sel").value;
+  if (!key) { showError("Enter your Groq API key first."); return; }
+  if (!pendingFiles.length) { showError("Upload at least one PDF or TXT file first."); return; }
+
+  setProcessing(true);
+  hideError();
+
+  try {
+    // 1. Set config
+    const cfg = await fetch(`${API}/config`, {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ api_key: key, model })
+    });
+    if (!cfg.ok) throw new Error(await cfg.text());
+
+    // 2. Upload + process
+    const fd = new FormData();
+    pendingFiles.forEach(f => fd.append("files", f));
+    fd.append("chunk_size",    document.getElementById("csz").value);
+    fd.append("chunk_overlap", document.getElementById("cov").value);
+
+    const up = await fetch(`${API}/upload`, { method:"POST", body: fd });
+    if (!up.ok) { const t = await up.json(); throw new Error(t.detail || "Upload failed"); }
+    const data = await up.json();
+
+    updateStatus();
+    renderDocChips(data.docs);
+    document.getElementById("indexed-docs").classList.remove("hidden");
+    pendingFiles = [];
+    renderFileList();
+    document.getElementById("file-list").innerHTML = "";
+  } catch(e) {
+    showError(e.message);
+  }
+  setProcessing(false);
+}
+
+function setProcessing(on) {
+  const btn = document.getElementById("process-btn");
+  const lbl = document.getElementById("process-label");
+  if (on) {
+    lbl.innerHTML = '<svg class="spin w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg> Processing...';
+    btn.disabled = true;
+  } else {
+    lbl.textContent = "Process Documents";
+    btn.disabled = false;
+  }
+}
+
+// ── Ask ──────────────────────────────────────────────────────────────────
+async function askQuestion() {
+  const q = document.getElementById("q-input").value.trim();
+  if (!q) return;
+  document.getElementById("q-input").value = "";
+  hideError();
+  setAsking(true);
+
+  appendUserMsg(q);
+
+  const topk = document.getElementById("topk").value;
+  const mode = document.querySelector('input[name="mode"]:checked').value;
+
+  try {
+    const res  = await fetch(`${API}/ask`, {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ question: q, top_k: parseInt(topk), mode })
+    });
+    if (!res.ok) { const t = await res.json(); throw new Error(t.detail || "Error"); }
+    const data = await res.json();
+
+    appendBotMsg(data.a, data.time);
+    renderSources(data.sources);
+    updateStatus();
+  } catch(e) {
+    showError(e.message);
+  }
+  setAsking(false);
+}
+
+function setAsking(on) {
+  const btn = document.getElementById("ask-btn");
+  const lbl = document.getElementById("ask-label");
+  lbl.textContent = on ? "..." : "Ask";
+  btn.disabled = on;
+}
+
+// ── Chat rendering ───────────────────────────────────────────────────────
+function appendUserMsg(text) {
+  removeEmpty();
+  const chat = document.getElementById("chat");
+  chat.insertAdjacentHTML("beforeend", `
+    <div class="fade-in flex flex-col items-end gap-1.5">
+      <div class="text-xs text-gray-400">You</div>
+      <div class="bg-gray-900 text-white text-sm px-4 py-3 rounded-2xl rounded-br-sm max-w-[75%] leading-relaxed font-medium">${escHtml(text)}</div>
+    </div>`);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function appendBotMsg(text, time) {
+  const chat   = document.getElementById("chat");
+  const parsed = typeof marked !== "undefined"
+    ? marked.parse(text)
+    : text.replace(/\n\n/g,"<br><br>").replace(/\n/g,"<br>");
+  chat.insertAdjacentHTML("beforeend", `
+    <div class="fade-in flex flex-col gap-1.5">
+      <div class="text-xs text-gray-400 flex items-center gap-1.5">
+        <span class="w-5 h-5 rounded-full bg-gray-900 flex items-center justify-center flex-shrink-0">
+          <svg width="10" height="10" fill="white" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/></svg>
+        </span>
+        Answer · ${time}
+      </div>
+      <div class="bg-white border border-gray-200 shadow-sm text-sm px-5 py-4 rounded-2xl rounded-tl-sm max-w-[90%] text-gray-800 prose-chat">${parsed}</div>
+    </div>`);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function removeEmpty() {
+  const e = document.getElementById("empty-state");
+  if (e) e.remove();
+}
+
+// ── Sources ──────────────────────────────────────────────────────────────
+function renderSources(sources) {
+  const el = document.getElementById("sources");
+  el.innerHTML = sources.map((s, i) => `
+    <div class="fade-in bg-white border border-gray-200 rounded-xl p-3 shadow-sm">
+      <div class="flex items-center justify-between mb-2">
+        <span class="text-xs font-bold bg-gray-900 text-white px-2.5 py-0.5 rounded-full">
+          #${i+1}${s.page !== "" ? " · p"+(parseInt(s.page)+1) : ""}
+        </span>
+        <span class="text-xs text-gray-400 italic truncate ml-2 max-w-[110px]">${s.source}</span>
+      </div>
+      <p class="text-xs text-gray-500 leading-relaxed border-l-2 border-gray-200 pl-2">${escHtml(s.text)}${s.text.length >= 300?"…":""}</p>
+    </div>`).join("");
+}
+
+// ── Doc chips ────────────────────────────────────────────────────────────
+function renderDocChips(docs) {
+  document.getElementById("doc-chips").innerHTML = docs.map(d => `
+    <div class="flex items-center justify-between bg-white border border-gray-200 rounded-lg px-3 py-2">
+      <span class="text-xs font-medium text-gray-700 truncate max-w-[140px]">${d.name}</span>
+      <span class="text-xs text-gray-400">${d.size} · ${d.pages}pg</span>
+    </div>`).join("");
+}
+
+// ── Status ───────────────────────────────────────────────────────────────
+async function updateStatus() {
+  try {
+    const res  = await fetch(`${API}/status`);
+    const data = await res.json();
+    document.getElementById("stat-docs").textContent   = `${data.n_docs} docs`;
+    document.getElementById("stat-chunks").textContent = `${data.n_chunks} chunks`;
+    document.getElementById("stat-q").textContent      = `${data.n_qa} questions`;
+    const pill = document.getElementById("status-pill");
+    if (data.ready) {
+      pill.textContent = "Ready";
+      pill.className = "text-xs font-medium px-3 py-1 rounded-full bg-green-100 text-green-700";
+    }
+  } catch {}
+}
+
+// ── Clear / Export ───────────────────────────────────────────────────────
+async function clearHistory() {
+  await fetch(`${API}/history`, {method:"DELETE"});
+  document.getElementById("chat").innerHTML =
+    `<div id="empty-state" class="flex flex-col items-center justify-center h-40 text-gray-300">
+      <div class="text-4xl mb-3">💬</div>
+      <div class="text-sm">Upload documents and ask a question</div>
+    </div>`;
+  document.getElementById("sources").innerHTML =
+    '<div class="text-xs text-gray-300">Source chunks appear here after your first question.</div>';
+  updateStatus();
+}
+
+async function exportChat() {
+  const res  = await fetch(`${API}/export`);
+  const data = await res.json();
+  const blob = new Blob([data.text], {type:"text/plain"});
+  const a    = document.createElement("a");
+  a.href     = URL.createObjectURL(blob);
+  a.download = `docrag_${new Date().toISOString().slice(0,10)}.txt`;
+  a.click();
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────
+function showError(msg) {
+  const el = document.getElementById("error-banner");
+  el.textContent = "Error: " + msg;
+  el.classList.remove("hidden");
+}
+function hideError() {
+  document.getElementById("error-banner").classList.add("hidden");
+}
+function escHtml(s) {
+  return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+
+// Init
+updateStatus();
+setInterval(updateStatus, 10000);
+</script>
+</body>
+</html>

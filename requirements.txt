@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+python-multipart
+langchain>=0.2.0
+langchain-community>=0.2.0
+langchain-groq>=0.1.0
+langchain-text-splitters
+langchain-core
+fastembed
+faiss-cpu>=1.8.0
+pypdf>=4.0.0
